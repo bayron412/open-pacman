@@ -27,7 +27,7 @@ function createGame() {
   let dots = 0;
   for ( const row of grid ) for ( const v of row ) if ( v === 2 ) dots++;
 
-  return {
+  const game = {
     state: 'start',
     frames: 0,
     score: 0,
@@ -47,10 +47,12 @@ function createGame() {
       dir: 'up',
       speed: GHOST_SPEED,
       kind: g.kind,
-      pen: g.kind !== 'blinky',
-      exitAt: GHOST_EXIT_DELAY[ g.kind ] || 0,
     } ) ),
   };
+  // Estado inicial de unica fuente: resetPositions completa pen/exitAt,
+  // igual que tras morir, sin duplicar la logica del escalonado.
+  resetPositions( game );
+  return game;
 }
 
 function aligned( v ) {
@@ -143,7 +145,7 @@ function decideGhost( game, g ) {
     ( dir ) => dir !== OPPOSITE[ g.dir ] && canMove( grid, g.x, g.y, dir )
   );
   // Sin salida (callejon): permitir el giro de 180.
-  const choices = options.length ? options : [ '' + OPPOSITE[ g.dir ] ];
+  const choices = options.length ? options : [ OPPOSITE[ g.dir ] ];
 
   // En cada cruce, la direccion que minimiza Manhattan al target.
   let best = choices[ 0 ];
@@ -167,7 +169,6 @@ function exitPen( g ) {
   else if ( g.y > 11 ) g.y -= g.speed;
 
   if ( g.y <= 11 ) {
-    g.x = 13;
     g.y = 11;
     g.pen = false;
     g.dir = 'left';
