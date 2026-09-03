@@ -1,6 +1,6 @@
 # SPEC 02 — Power pellets aleatorios y modo asustado
 
-> **Estado:** Aprobado
+> **Estado:** Implementado
 > **Depende de:** SPEC 01
 > **Fecha:** 2026-09-03
 > **Objetivo:** Cuatro power pellets en celdas aleatorias por nivel que, al comerlos, asustan a los fantasmas: se vuelven azules, comibles y regresan como ojos a la pen.

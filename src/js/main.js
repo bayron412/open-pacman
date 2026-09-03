@@ -24,17 +24,34 @@ const KEY_DIR = {
 
 document.addEventListener( 'keydown', ( e ) => {
   const dir = KEY_DIR[ e.key ];
-  if ( !dir ) return;
-  e.preventDefault();
-  if ( game.state === 'playing' ) game.pacman.nextDir = dir;
+  if ( dir ) {
+    e.preventDefault();
+    if ( game.state === 'playing' ) game.pacman.nextDir = dir;
+    return;
+  }
+  // Escape pausa; Enter reanuda o arranca.
+  if ( e.key === 'Escape' && game.state === 'playing' ) {
+    game.state = 'paused';
+    showOverlay( 'PAUSA', '', 'Reanudar', resumeGame );
+  } else if ( e.key === 'Enter' ) {
+    // preventDefault: evita el click del boton enfocado al presionar Enter.
+    e.preventDefault();
+    if ( game.state === 'paused' ) resumeGame();
+    else if ( game.state !== 'playing' ) startGame();
+  }
 } );
 
-function showOverlay( title, cls, btnLabel ) {
+function showOverlay( title, cls, btnLabel, onClick ) {
   overlay.innerHTML =
     '<h1' + ( cls ? ' class="' + cls + '"' : '' ) + '>' + title + '</h1>' +
     '<button id="action-btn">' + btnLabel + '</button>';
   overlay.classList.add( 'show' );
-  document.getElementById( 'action-btn' ).addEventListener( 'click', startGame );
+  document.getElementById( 'action-btn' ).addEventListener( 'click', onClick || startGame );
+}
+
+function resumeGame() {
+  game.state = 'playing';
+  overlay.classList.remove( 'show' );
 }
 
 function startGame() {
@@ -42,8 +59,7 @@ function startGame() {
   // cualquier otro arranque es partida nueva.
   if ( game.state === 'won' ) nextLevel( game );
   else game = createGame();
-  game.state = 'playing';
-  overlay.classList.remove( 'show' );
+  resumeGame();
 }
 
 if ( actionBtn ) actionBtn.addEventListener( 'click', startGame );

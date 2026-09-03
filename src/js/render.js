@@ -66,14 +66,18 @@ function drawDoor( ctx, grid ) {
   ctx.stroke();
 }
 
-function drawDots( ctx, grid ) {
+// Dots y power pellets: el pellet (tile 4) es un circulo grande que parpadea.
+function drawDots( ctx, grid, frame ) {
   ctx.fillStyle = DOT_COLOR;
   for ( let y = 0; y < grid.length; y++ ) {
     for ( let x = 0; x < grid[ 0 ].length; x++ ) {
-      if ( grid[ y ][ x ] !== 2 ) continue;
+      const v = grid[ y ][ x ];
+      if ( v !== 2 && v !== 4 ) continue;
+      // Parpadeo del pellet: visible medio ciclo, oculto el otro medio.
+      if ( v === 4 && Math.floor( frame / 10 ) % 2 ) continue;
       const { cx, cy } = cellCenter( x, y );
       ctx.beginPath();
-      ctx.arc( cx, cy, 2.5, 0, Math.PI * 2 );
+      ctx.arc( cx, cy, v === 4 ? 7 : 2.5, 0, Math.PI * 2 );
       ctx.fill();
     }
   }
@@ -106,17 +110,20 @@ function drawGhost( ctx, g, color ) {
   const left = cx - r;
   const right = cx + r;
 
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.arc( cx, cy - 1, r, Math.PI, 0, false ); // cabeza
-  ctx.lineTo( right, bottom );
-  // falda ondulada (3 picos)
-  ctx.lineTo( right - r * 0.66, bottom - 4 );
-  ctx.lineTo( cx, bottom );
-  ctx.lineTo( left + r * 0.66, bottom - 4 );
-  ctx.lineTo( left, bottom );
-  ctx.closePath();
-  ctx.fill();
+  // Ojos (comido): sin cuerpo, solo los ojos de regreso a la pen.
+  if ( !g.eyes ) {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc( cx, cy - 1, r, Math.PI, 0, false ); // cabeza
+    ctx.lineTo( right, bottom );
+    // falda ondulada (3 picos)
+    ctx.lineTo( right - r * 0.66, bottom - 4 );
+    ctx.lineTo( cx, bottom );
+    ctx.lineTo( left + r * 0.66, bottom - 4 );
+    ctx.lineTo( left, bottom );
+    ctx.closePath();
+    ctx.fill();
+  }
 
   // ojos mirando segun direccion
   const dir = DIRS[ g.dir ] || { x: 0, y: 0 };
@@ -159,9 +166,18 @@ function draw( ctx, game, frame ) {
 
   drawWalls( ctx, grid );
   drawDoor( ctx, grid );
-  drawDots( ctx, grid );
+  drawDots( ctx, grid, frame );
   drawPacman( ctx, game.pacman, frame );
-  game.ghosts.forEach( ( g, i ) => drawGhost( ctx, g, GHOST_COLORS[ i ] || '#ff0000' ) );
+  game.ghosts.forEach( ( g, i ) => {
+    let color = GHOST_COLORS[ i ] || '#ff0000';
+    // Asustado: azul; ultimos 2 s parpadea azul/blanco.
+    if ( g.frightened ) {
+      color = '#2121de';
+      if ( game.frightened <= FRIGHTENED_FLASH && Math.floor( frame / 10 ) % 2 )
+        color = '#ffffff';
+    }
+    drawGhost( ctx, g, color );
+  } );
   drawHUD( ctx, game, W );
 }
 

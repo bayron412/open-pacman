@@ -34,6 +34,16 @@ const SCATTER_TARGETS = {
 const MODE_SCHEDULE = [ 420, 1200, 420, 1200, 420, 1200, 300, Infinity ];
 // Prioridad de desempate clasica al elegir direccion en un cruce.
 const DIR_PRIORITY = [ 'up', 'left', 'down', 'right' ];
+// Power pellets: cuantos se sortean y separacion Manhattan minima entre ellos.
+const POWER_PELLETS = 4;
+const PELLET_MIN_DIST = 8;
+// Modo asustado: duracion en frames (6 s a 60 fps) y parpadeo final.
+const FRIGHTENED_FRAMES = 360;
+const FRIGHTENED_FLASH = 120;
+// Cadena de puntos por comer fantasmas asustados en un mismo efecto.
+const EAT_CHAIN = [ 200, 400, 800, 1600 ];
+// Target de los ojos (fantasma comido): la puerta de la pen.
+const PEN_DOOR = { x: 13, y: 11 };
 
 // Crea una partida nueva. Copia MAZE (pristino) a game.grid para poder comer
 // dots sin destruir el original, y reiniciar.
@@ -42,16 +52,16 @@ function createGame() {
   // La celda de inicio de Pacman arranca sin dot.
   grid[ PACMAN_START.y ][ PACMAN_START.x ] = 0;
 
-  let dots = 0;
-  for ( const row of grid ) for ( const v of row ) if ( v === 2 ) dots++;
-
   const game = {
     state: 'start',
     frames: 0,
     score: 0,
     lives: 3,
     level: 1,
-    dotsRemaining: dots,
+    dotsRemaining: 0,
+    // Modo asustado: frames restantes del efecto e indice de cadena.
+    frightened: 0,
+    eatenCount: 0,
     grid,
     pacman: {
       x: PACMAN_START.x,
@@ -64,12 +74,41 @@ function createGame() {
       y: g.y,
       dir: 'up',
       kind: g.kind,
+      frightened: false,
+      eyes: false,
     } ) ),
   };
   // Estado inicial de unica fuente: resetPositions completa pen/exitAt,
   // igual que tras morir, sin duplicar la logica del escalonado.
+  placePellets( game );
+  // Los pellets cuentan como dots para ganar el nivel.
+  game.dotsRemaining = game.grid.flat().filter( ( v ) => v === 2 || v === 4 ).length;
   resetPositions( game );
   return game;
+}
+
+// Sortea POWER_PELLETS celdas con dot (grid === 2) separadas >=PELLET_MIN_DIST
+// en Manhattan y las marca como power pellets (tile 4, solo en runtime: MAZE
+// nunca lo contiene). Solo se sortea al crear partida y al subir de nivel;
+// al morir los pellets restantes se mantienen.
+function placePellets( game ) {
+  const grid = game.grid;
+  let chosen = [];
+  // Reintenta el sorteo entero si el azar deja menos de POWER_PELLETS
+  // colocables (rarisimo: cubrir todos los dots con 3 rombos de radio 7).
+  do {
+    const candidates = [];
+    for ( let y = 0; y < grid.length; y++ )
+      for ( let x = 0; x < grid[ 0 ].length; x++ )
+        if ( grid[ y ][ x ] === 2 ) candidates.push( { x, y } );
+    chosen = [];
+    while ( chosen.length < POWER_PELLETS && candidates.length ) {
+      const c = candidates.splice( Math.floor( Math.random() * candidates.length ), 1 )[ 0 ];
+      if ( chosen.every( ( p ) => Math.abs( p.x - c.x ) + Math.abs( p.y - c.y ) >= PELLET_MIN_DIST ) )
+        chosen.push( c );
+    }
+  } while ( chosen.length < POWER_PELLETS );
+  for ( const p of chosen ) grid[ p.y ][ p.x ] = 4;
 }
 
 function aligned( v ) {
@@ -117,11 +156,24 @@ function movePacman( game ) {
       p.dir = p.nextDir;
       p.nextDir = null;
     }
-    // Comer dot.
-    if ( grid[ p.y ][ p.x ] === 2 ) {
+    // Comer dot o power pellet.
+    const cell = grid[ p.y ][ p.x ];
+    if ( cell === 2 ) {
       grid[ p.y ][ p.x ] = 0;
       game.score += 10;
       game.dotsRemaining--;
+    } else if ( cell === 4 ) {
+      grid[ p.y ][ p.x ] = 0;
+      game.score += 50;
+      game.dotsRemaining--;
+      // Activa el modo asustado: reinicia timer y cadena de fantasmas.
+      game.frightened = FRIGHTENED_FRAMES;
+      game.eatenCount = 0;
+      // Solo los activos: los de la pen salen normales y los ojos ya
+      // estan muertos (renacen normales).
+      game.ghosts.forEach( ( g ) => {
+        if ( !g.pen && !g.eyes ) g.frightened = true;
+      } );
     }
     // Si no puede seguir, se detiene en la celda.
     if ( !canMove( grid, p.x, p.y, p.dir ) ) return;
@@ -141,6 +193,10 @@ function ghostTarget( game, g ) {
   const py = Math.round( p.y );
   const pd = DIRS[ p.dir ];
 
+  // Ojos (comido): regresa a la puerta de la pen.
+  if ( g.eyes ) return PEN_DOOR;
+  // Asustado: huye hacia su esquina scatter.
+  if ( g.frightened ) return SCATTER_TARGETS[ g.kind ];
   // En scatter cada fantasma se retira a su esquina; en chase usa su
   // personalidad clasica.
   if ( game.mode === 'scatter' ) return SCATTER_TARGETS[ g.kind ];
@@ -196,6 +252,23 @@ function exitPen( g ) {
 }
 
 function moveGhost( game, g ) {
+  // Ojos que alcanzaron la puerta: entran a la pen por script bajando hasta
+  // (13,14), donde renacen. Igual que exitPen, no usa canMove (la puerta
+  // bloquea a los actores normales). La columna 13 solo se recorre asi entre
+  // las filas 11 y 14, por lo que la condicion no captura a nadie mas.
+  // OJO: x llega por pasos acumulados (p.ej. 12.999999999999998), nunca por
+  // igualdad estricta con 13 — comparar con tolerancia y snap.
+  if ( g.eyes && Math.abs( g.x - PEN_DOOR.x ) < 1e-3 && g.y >= PEN_DOOR.y && g.y < 14 ) {
+    g.x = PEN_DOOR.x;
+    g.y += g.speed;
+    if ( g.y >= 14 ) {
+      g.y = 14;
+      g.eyes = false;
+      g.pen = true;
+      g.exitAt = game.frames + 60; // renace y sale al segundo
+    }
+    return;
+  }
   // Dentro de la pen: quieto hasta su turno, luego sale con el script.
   if ( g.pen ) {
     if ( game.frames >= g.exitAt ) exitPen( g );
@@ -221,6 +294,8 @@ function moveGhost( game, g ) {
 // da media vuelta (senal clasica del original). El opuesto conserva el eje,
 // asi que el snap de alineacion reintegra a la cuadricula sin romperla.
 function updateMode( game ) {
+  // El horario scatter/chase pausa mientras dura el modo asustado.
+  if ( game.frightened > 0 ) return;
   game.modeFrames++;
   if ( game.modeFrames < MODE_SCHEDULE[ game.modeIndex ] ) return;
   game.modeFrames = 0;
@@ -249,11 +324,16 @@ function resetPositions( game ) {
     // El escalonado se reinicia relativo al frame actual de la partida.
     g.pen = g.kind !== 'blinky';
     g.exitAt = game.frames + ( GHOST_EXIT_DELAY[ g.kind ] || 0 );
+    g.frightened = false;
+    g.eyes = false;
   } );
-  // El horario de modos tambien se reinicia (como en el original al morir).
+  // El horario de modos tambien se reinicia (como en el original al morir),
+  // igual que todo el estado asustado/ojos (fuente unica de limpieza).
   game.mode = 'scatter';
   game.modeIndex = 0;
   game.modeFrames = 0;
+  game.frightened = 0;
+  game.eatenCount = 0;
 }
 
 // Siguiente nivel: laberinto y dots nuevos, mismo score y vidas (como el
@@ -262,7 +342,9 @@ function nextLevel( game ) {
   game.level++;
   game.grid = MAZE.map( ( row ) => row.slice() );
   game.grid[ PACMAN_START.y ][ PACMAN_START.x ] = 0;
-  game.dotsRemaining = game.grid.flat().filter( ( v ) => v === 2 ).length;
+  placePellets( game );
+  // Los pellets cuentan como dots para ganar el nivel.
+  game.dotsRemaining = game.grid.flat().filter( ( v ) => v === 2 || v === 4 ).length;
   resetPositions( game );
 }
 
@@ -272,20 +354,38 @@ function collides( a, b ) {
 
 function update( game ) {
   game.frames++;
+  // Timer del modo asustado: al llegar a 0 se apaga en todos los fantasmas.
+  if ( game.frightened > 0 ) {
+    game.frightened--;
+    if ( game.frightened === 0 ) {
+      game.ghosts.forEach( ( g ) => {
+        g.frightened = false;
+      } );
+    }
+  }
   updateMode( game );
   movePacman( game );
   game.ghosts.forEach( ( g ) => moveGhost( game, g ) );
 
   for ( const g of game.ghosts ) {
-    if ( collides( game.pacman, g ) ) {
-      game.lives--;
-      if ( game.lives <= 0 ) {
-        game.state = 'lost';
-        return;
-      }
-      resetPositions( game );
-      break;
+    if ( !collides( game.pacman, g ) ) continue;
+    // Ojos: no colisionan (ni matan ni son comibles).
+    if ( g.eyes ) continue;
+    // Fantasma asustado: se lo come, se vuelve ojos y encadena puntos.
+    if ( g.frightened ) {
+      g.frightened = false;
+      g.eyes = true;
+      game.score += EAT_CHAIN[ Math.min( game.eatenCount, 3 ) ];
+      game.eatenCount++;
+      continue;
     }
+    game.lives--;
+    if ( game.lives <= 0 ) {
+      game.state = 'lost';
+      return;
+    }
+    resetPositions( game );
+    break;
   }
 
   if ( game.dotsRemaining <= 0 ) game.state = 'won';
@@ -295,3 +395,4 @@ window.createGame = createGame;
 window.update = update;
 window.nextLevel = nextLevel;
 window.DIRS = DIRS;
+window.FRIGHTENED_FLASH = FRIGHTENED_FLASH;
