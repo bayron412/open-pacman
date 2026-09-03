@@ -10,12 +10,30 @@ const DIRS = {
 };
 const OPPOSITE = { left: 'right', right: 'left', up: 'down', down: 'up' };
 
-const PACMAN_SPEED = 0.125; // 1/8 celda/frame -> alinea cada 8 frames
-const GHOST_SPEED = 0.1;    // 1/10 celda/frame
+// Velocidades por nivel en celdas/frame. Solo pasos 1/n: la cuadricula
+// (aligned) solo engancha si el paso divide la celda exacta; un 0.075,
+// p.ej., se saltaria los cruces. Techo desde nivel 4, como el original.
+const LEVEL_SPEEDS = {
+  1: { pac: 1 / 10, ghost: 1 / 13 },
+  2: { pac: 1 / 9, ghost: 1 / 11 },
+  3: { pac: 1 / 8, ghost: 1 / 10 },
+  4: { pac: 1 / 7, ghost: 1 / 9 },
+};
 // Frames de espera antes de salir de la pen (blinky ya esta fuera).
 const GHOST_EXIT_DELAY = { pinky: 120, inky: 360, clyde: 720 }; // a 60 fps
-// Esquina de clyde (inferior-izquierda): a donde huye cuando esta cerca.
-const CLYDE_CORNER = { x: 0, y: 30 };
+// Esquina de scatter de cada fantasma: a donde se retira en modo scatter
+// (clyde tambien huye a la suya en chase cuando esta cerca).
+const SCATTER_TARGETS = {
+  blinky: { x: 25, y: 0 },
+  pinky: { x: 2, y: 0 },
+  inky: { x: 27, y: 30 },
+  clyde: { x: 0, y: 30 },
+};
+// Horario clasico del nivel 1: alterna scatter/chase empezando en scatter
+// (frames a 60 fps). El tramo final (Infinity) es chase ya para siempre.
+const MODE_SCHEDULE = [ 420, 1200, 420, 1200, 420, 1200, 300, Infinity ];
+// Prioridad de desempate clasica al elegir direccion en un cruce.
+const DIR_PRIORITY = [ 'up', 'left', 'down', 'right' ];
 
 // Crea una partida nueva. Copia MAZE (pristino) a game.grid para poder comer
 // dots sin destruir el original, y reiniciar.
@@ -32,6 +50,7 @@ function createGame() {
     frames: 0,
     score: 0,
     lives: 3,
+    level: 1,
     dotsRemaining: dots,
     grid,
     pacman: {
@@ -39,13 +58,11 @@ function createGame() {
       y: PACMAN_START.y,
       dir: 'left',
       nextDir: null,
-      speed: PACMAN_SPEED,
     },
     ghosts: GHOST_STARTS.map( ( g ) => ( {
       x: g.x,
       y: g.y,
       dir: 'up',
-      speed: GHOST_SPEED,
       kind: g.kind,
     } ) ),
   };
@@ -124,6 +141,9 @@ function ghostTarget( game, g ) {
   const py = Math.round( p.y );
   const pd = DIRS[ p.dir ];
 
+  // En scatter cada fantasma se retira a su esquina; en chase usa su
+  // personalidad clasica.
+  if ( game.mode === 'scatter' ) return SCATTER_TARGETS[ g.kind ];
   if ( g.kind === 'blinky' ) return { x: px, y: py };
   if ( g.kind === 'pinky' ) return { x: px + pd.x * 4, y: py + pd.y * 4 };
   if ( g.kind === 'inky' ) {
@@ -134,14 +154,14 @@ function ghostTarget( game, g ) {
   }
   // clyde: timido — persigue lejos, huye a su esquina a 8 celdas o menos.
   const dist = Math.abs( g.x - px ) + Math.abs( g.y - py );
-  return dist > 8 ? { x: px, y: py } : CLYDE_CORNER;
+  return dist > 8 ? { x: px, y: py } : SCATTER_TARGETS.clyde;
 }
 
 function decideGhost( game, g ) {
   const grid = game.grid;
   const target = ghostTarget( game, g );
 
-  const options = Object.keys( DIRS ).filter(
+  const options = DIR_PRIORITY.filter(
     ( dir ) => dir !== OPPOSITE[ g.dir ] && canMove( grid, g.x, g.y, dir )
   );
   // Sin salida (callejon): permitir el giro de 180.
@@ -197,20 +217,53 @@ function moveGhost( game, g ) {
   wrapTunnel( g, width );
 }
 
+// Avanza el horario scatter/chase. Al cambiar de modo, cada fantasma activo
+// da media vuelta (senal clasica del original). El opuesto conserva el eje,
+// asi que el snap de alineacion reintegra a la cuadricula sin romperla.
+function updateMode( game ) {
+  game.modeFrames++;
+  if ( game.modeFrames < MODE_SCHEDULE[ game.modeIndex ] ) return;
+  game.modeFrames = 0;
+  game.modeIndex++;
+  game.mode = game.mode === 'scatter' ? 'chase' : 'scatter';
+  game.ghosts.forEach( ( g ) => {
+    if ( !g.pen ) g.dir = OPPOSITE[ g.dir ];
+  } );
+}
+
 function resetPositions( game ) {
   const p = game.pacman;
   p.x = PACMAN_START.x;
   p.y = PACMAN_START.y;
   p.dir = 'left';
   p.nextDir = null;
+  // Velocidades del nivel (fuente unica: arranque, tras morir y al subir
+  // de nivel). Techo en nivel 4.
+  const sp = LEVEL_SPEEDS[ Math.min( game.level, 4 ) ];
+  p.speed = sp.pac;
   game.ghosts.forEach( ( g, i ) => {
     g.x = GHOST_STARTS[ i ].x;
     g.y = GHOST_STARTS[ i ].y;
     g.dir = 'up';
+    g.speed = sp.ghost;
     // El escalonado se reinicia relativo al frame actual de la partida.
     g.pen = g.kind !== 'blinky';
     g.exitAt = game.frames + ( GHOST_EXIT_DELAY[ g.kind ] || 0 );
   } );
+  // El horario de modos tambien se reinicia (como en el original al morir).
+  game.mode = 'scatter';
+  game.modeIndex = 0;
+  game.modeFrames = 0;
+}
+
+// Siguiente nivel: laberinto y dots nuevos, mismo score y vidas (como el
+// original). El estado 'playing' lo pone quien llama.
+function nextLevel( game ) {
+  game.level++;
+  game.grid = MAZE.map( ( row ) => row.slice() );
+  game.grid[ PACMAN_START.y ][ PACMAN_START.x ] = 0;
+  game.dotsRemaining = game.grid.flat().filter( ( v ) => v === 2 ).length;
+  resetPositions( game );
 }
 
 function collides( a, b ) {
@@ -219,6 +272,7 @@ function collides( a, b ) {
 
 function update( game ) {
   game.frames++;
+  updateMode( game );
   movePacman( game );
   game.ghosts.forEach( ( g ) => moveGhost( game, g ) );
 
@@ -239,4 +293,5 @@ function update( game ) {
 
 window.createGame = createGame;
 window.update = update;
+window.nextLevel = nextLevel;
 window.DIRS = DIRS;
